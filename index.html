@@ -140,6 +140,21 @@
             z-index: 15;
             text-shadow: 0 0 10px rgba(255,255,255,0.5);
         }
+
+        /* --- 新增：生命值显示样式 --- */
+        #lives-display {
+            position: absolute;
+            top: 65px; /* 放在分数下面 */
+            left: 22px;
+            font-size: 1.2rem;
+            font-weight: 400;
+            color: rgba(255, 80, 80, 0.9);
+            display: none;
+            pointer-events: none;
+            z-index: 15;
+            text-shadow: 0 0 5px rgba(255,0,0,0.3);
+            letter-spacing: 1px;
+        }
         
         /* 新手引导提示条 */
         #tutorial-message {
@@ -222,7 +237,6 @@
         <button class="icon-btn" id="lang-btn">EN</button>
     </div>
 
-    <!-- 引导提示文字 -->
     <div id="tutorial-message"></div>
 
     <div id="ui-layer">
@@ -249,6 +263,7 @@
     </div>
 
     <div id="score-display">0</div>
+    <div id="lives-display">Lives: 10</div>
 
     <div id="history-modal" class="modal-overlay">
         <div class="modal-content">
@@ -281,7 +296,8 @@ const TEXTS = {
         tutStep3: "小心红色敌人！绕着星球转圈，触发光环",
         tutStep4: "太棒了！冲击波清除了敌人",
         tutStep5: "又来了一颗！继续拯救它",
-        tutStep6: "你已经学会了！继续拯救星空吧！"
+        tutStep6: "你已经学会了！继续拯救星空吧！",
+        lives: "生命: " // 新增
     },
     en: {
         title: "ORBIT BLOOM",
@@ -302,7 +318,8 @@ const TEXTS = {
         tutStep3: "Avoid red enemies! Orbit the star to charge",
         tutStep4: "Great! Shockwave cleared the enemy",
         tutStep5: "Another one! Save it too",
-        tutStep6: "You got it! Keep saving the stars!"
+        tutStep6: "You got it! Keep saving the stars!",
+        lives: "HP: " // 新增
     }
 };
 
@@ -316,6 +333,7 @@ function updateTexts() {
     });
     updateRecordDisplay();
     document.getElementById('lang-btn').innerText = currentLang === 'zh' ? 'EN' : '中文';
+    if (gameActive) updateLivesDisplay(); // 切换语言时更新生命值显示
 }
 
 function updateRecordDisplay() {
@@ -436,6 +454,7 @@ const starCanvas = document.getElementById('star-canvas');
 const starCtx = starCanvas.getContext('2d');
 const uiLayer = document.getElementById('ui-layer');
 const scoreDisplay = document.getElementById('score-display');
+const livesDisplay = document.getElementById('lives-display'); // 新增引用
 const startScreen = document.getElementById('start-screen');
 const gameOverScreen = document.getElementById('game-over-screen');
 const finalScoreEl = document.getElementById('final-score');
@@ -444,6 +463,7 @@ let width, height;
 let animationId;
 let lastTime = 0;
 let score = 0;
+let lives = 10; // 新增生命值变量
 let gameActive = false;
 let audio;
 let isTutorialMode = false;
@@ -518,11 +538,16 @@ function goHome() {
     gameActive = false;
     cancelAnimationFrame(animationId);
     scoreDisplay.style.display = 'none';
+    livesDisplay.style.display = 'none'; // 隐藏生命值
     gameOverScreen.style.display = 'none';
     startScreen.style.display = 'block';
     tutorialMsg.style.display = 'none';
     ctx.clearRect(0, 0, width, height);
     updateRecordDisplay();
+}
+
+function updateLivesDisplay() {
+    livesDisplay.innerText = TEXTS[currentLang].lives + lives;
 }
 
 function startGame(tutorial = false) {
@@ -533,6 +558,7 @@ function startGame(tutorial = false) {
     tutorialStep = 0;
     tutorialTimer = 0;
     score = 0;
+    lives = 10; // 重置生命值
     stars = [];
     enemies = [];
     particles = [];
@@ -545,6 +571,10 @@ function startGame(tutorial = false) {
     
     scoreDisplay.innerText = "0";
     scoreDisplay.style.display = 'block';
+    
+    livesDisplay.style.display = 'block'; // 显示生命值
+    updateLivesDisplay();
+
     startScreen.style.display = 'none';
     gameOverScreen.style.display = 'none';
     
@@ -559,14 +589,29 @@ function startGame(tutorial = false) {
     }
 }
 
+// 新增：扣血逻辑
+function takeDamage() {
+    if (!gameActive) return;
+    lives--;
+    updateLivesDisplay();
+    audio.playDamage();
+    
+    if (lives <= 0) {
+        endGame();
+    }
+}
+
 function endGame() {
     gameActive = false;
     cancelAnimationFrame(animationId);
     scoreDisplay.style.display = 'none';
+    livesDisplay.style.display = 'none'; // 结束时隐藏
     gameOverScreen.style.display = 'block';
     finalScoreEl.innerText = TEXTS[currentLang].scorePrefix + score;
     tutorialMsg.style.display = 'none';
-    audio.playDamage();
+    // playDamage 在 takeDamage 里已经播放了，这里如果是扣完血触发的endGame不需要再播，
+    // 但如果是因为其他原因（代码兼容性），这里保留或者移除都行。
+    // 由于逻辑改为扣血触发endGame，最后的damage音效由takeDamage负责。
     saveScore(score);
 }
 
@@ -640,6 +685,7 @@ class Star {
         this.x = Math.random() * (width - 100) + 50;
         this.y = Math.random() * (height - 100) + 50;
         this.radius = 15;
+        this.currentRadius = this.radius; // 初始化，防止在update前被检测碰撞报错
         this.orbitProgress = 0;
         this.lastPlayerAngle = null;
         this.color = `hsl(${Math.random() * 50 + 170}, 100%, 70%)`; 
@@ -725,7 +771,30 @@ class Enemy {
         this.y += (dy / dist) * this.speed;
         this.x += this.pushX; this.y += this.pushY;
         this.pushX *= 0.9; this.pushY *= 0.9;
-        if (dist < player.radius + this.radius) endGame();
+        
+        // 1. 撞击玩家检测
+        if (dist < player.radius + this.radius) {
+            takeDamage();
+            this.markedForDeletion = true;
+            return;
+        }
+
+        // 2. 撞击星球检测 (新增修复)
+        for (let s of stars) {
+            // 只检测未绽放的星星
+            if (s.bloomed) continue;
+            
+            let sdx = s.x - this.x;
+            let sdy = s.y - this.y;
+            let sDist = Math.sqrt(sdx*sdx + sdy*sdy);
+            
+            // 星球半径使用 currentRadius，并加一点边距
+            if (sDist < s.currentRadius + this.radius) {
+                takeDamage();
+                this.markedForDeletion = true;
+                return;
+            }
+        }
     }
     draw() {
         ctx.beginPath();
